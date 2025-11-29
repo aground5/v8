@@ -10445,6 +10445,14 @@ MaybeReduceResult MaglevGraphBuilder::TryReduceArrayPrototypePush(
             {elements_array, receiver, old_array_length, elements_array_length},
             kind));
 
+    if (IsSmiOrObjectElementsKind(kind)) {
+      ValueNode* writable_elements;
+      GET_VALUE_OR_ABORT(writable_elements,
+                         AddNewNode<EnsureWritableFastElements>(
+                             {writable_elements_array, receiver}));
+      writable_elements_array = writable_elements;
+    }
+
     RETURN_IF_ABORT(AddNewNode<StoreTaggedFieldNoWriteBarrier>(
         {receiver, new_array_length_smi}, JSArray::kLengthOffset,
         StoreTaggedMode::kDefault));
