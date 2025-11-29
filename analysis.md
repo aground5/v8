@@ -8,7 +8,7 @@ A critical vulnerability exists in the V8 Deoptimizer when materializing `HoleyF
 The vulnerability is confirmed by analyzing three interacting components: the definition of `Float64`, the `NewHeapNumber` factory, and the Deoptimizer's materialization logic.
 
 ### 2.1 `Float64::is_hole_nan` Exists (`src/utils/boxed-float.h`)
-The `Float64` wrapper class correctly identifies the hole sentinel. This method is available but **unused** in the vulnerable code path.
+The `Float64` wrapper class correctly identifies the hole sentinel. `Float64` uses `base::bit_cast` to read/write scalar doubles, which preserves the bit pattern on standard architectures (like x64/arm64) used by V8.
 
 ```cpp
 // src/utils/boxed-float.h
@@ -20,6 +20,10 @@ class Float64 {
   }
   // ...
   bool is_hole_nan() const { return bit_pattern_ == kHoleNanInt64; }
+
+  // Returns the double value. If this is a Hole NaN, it returns the NaN.
+  // bit_cast ensures the bit pattern is preserved during the cast.
+  double get_scalar() const { return base::bit_cast<double>(bit_pattern_); }
   // ...
 };
 ```
@@ -34,6 +38,7 @@ template <AllocationType allocation>
 Handle<HeapNumber> FactoryBase<Impl>::NewHeapNumber(double value) {
   Handle<HeapNumber> heap_number = NewHeapNumber<allocation>();
   // [VULNERABILITY] Directly writes the bits, including the Hole NaN pattern.
+  // heap_number->set_value(value) ultimately writes the double bits to the heap.
   heap_number->set_value(value);
   return heap_number;
 }
@@ -72,8 +77,11 @@ Handle<Object> TranslatedValue::GetValue() {
     // uses kHoleyDouble for values that CAN be holes.
     // "We shouldn't have hole values by now, so treat holey double as normal doubles."
     case TranslatedValue::kHoleyDouble:
+      // [BUG] double_value().get_scalar() returns the raw double, potentially the Hole NaN.
       number = double_value().get_scalar();
+
       // [BUG] Missing `if (double_value().is_hole_nan()) ...`
+      // This passes the Hole NaN to NewHeapNumber, creating a HeapNumber(HoleNaN).
       heap_object = isolate()->factory()->NewHeapNumber(number);
       break;
     // ...
@@ -139,8 +147,9 @@ if (leaked === undefined) {
   // But here, we get a HeapNumber that is NaN.
   console.log("VULNERABLE: Leaked Hole sentinel as NaN!");
 
-  // Advanced: Check bit pattern (requires TypedArrays/DataView) to confirm
-  // it matches kHoleNanInt64 (0xfff7ffffffffffff).
+  // Note on get_scalar():
+  // Even though it returns a NaN double, the specific bit pattern of
+  // the Hole is preserved and wrapped in the HeapNumber.
 }
 ```
 
